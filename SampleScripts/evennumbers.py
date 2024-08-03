@@ -13,12 +13,9 @@
 
 # Python program to print Even Numbers in given range
 
-start = int(input("Enter the start of range: "))
-end = int(input("Enter the end of range: "))
+firstnumber = int(input("please enter start number: "))
+lastnumber = int(input("please enter end number: "))
 
-# iterating each number in list
-for num in range(start, end + 1):
-
-	# checking condition
-	if num % 2 == 0:
-		print(num, end=" ")
+for num in range(firstnumber, lastnumber +1):
+    if num % 2 == 0:
+        print(num, end=" ")
