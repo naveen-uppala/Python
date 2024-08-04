@@ -1,8 +1,8 @@
 import boto3
 
-def check_running_instances():
+def check_running_instances(region):
     # Initialize EC2 client
-    ec2_client = boto3.client('ec2')
+    ec2_client = boto3.client('ec2', region_name=region)
 
     try:
         # Get information about all running instances
