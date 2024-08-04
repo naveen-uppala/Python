@@ -1,8 +1,8 @@
 import boto3
 
-def force_redeploy_all_ecs_services(cluster_name):
+def force_redeploy_all_ecs_services(cluster_name, region):
     # Initialize ECS client
-    ecs_client = boto3.client('ecs')
+    ecs_client = boto3.client('ecs', region_name=region)
 
     try:
         # List all services in the cluster
@@ -12,20 +12,19 @@ def force_redeploy_all_ecs_services(cluster_name):
         # Iterate over each service and force a redeployment
         for service_arn in service_arns:
             service_name = service_arn.split('/')[-1]
-            force_redeploy_ecs_service(cluster_name, service_name)
+            print(service_name)
+            response = ecs_client.update_service(cluster=cluster_name,service=service_name,forceNewDeployment=True)
+            return response
+            # force_redeploy_ecs_service(cluster_name, service_name)
     except Exception as e:
         print(f"Error listing or redeploying services in cluster '{cluster_name}': {e}")
 
 if __name__ == "__main__":
     # Set your AWS credentials and region
-    aws_region = 'YOUR_AWS_REGION'
+    region = input("enter the region: ")
 
     # Set the name of the ECS cluster
-    cluster_name = 'YOUR_CLUSTER_NAME'
-
-    # Set up Boto3 client with your credentials and region
-    boto3.setup_default_session(region_name=aws_region
-    )
-
+    cluster_name = input("enter the cluster name: ")
+ 
     # Force redeploy all ECS services in the cluster
-    force_redeploy_all_ecs_services(cluster_name)
+    force_redeploy_all_ecs_services(cluster_name, region)
