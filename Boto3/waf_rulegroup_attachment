@@ -1,0 +1,203 @@
+import json
+from typing import List, Dict, Optional
+
+import boto3
+
+
+class WCLRuleManager:
+    """
+    A class to manage the addition of rule groups to AWS WAF Web ACLs.
+    This class specifically handles adding a single rule group to multiple Web ACLs.
+
+    Attributes:
+        client: Boto3 WAFv2 client instance
+        scope: The scope of the WAF resources (REGIONAL or CLOUDFRONT)
+    """
+
+    def __init__(self, region_name: str = 'us-east-1', scope: str = "REGIONAL") -> None:
+        """
+        Initialize the WCLRuleManager with AWS connection parameters.
+
+        Args:
+            region_name: AWS region name (default: 'us-east-1')
+            scope: Scope of WAF resources - REGIONAL or CLOUDFRONT (default: "REGIONAL")
+        """
+        self.client = boto3.client('wafv2', region_name=region_name)
+        self.scope = scope
+
+    def list_web_acls(self) -> List[Dict]:
+        """
+        Retrieve all Web ACLs in the specified scope.
+
+        Returns:
+            List of Web ACL dictionaries containing their details
+        """
+        response = self.client.list_web_acls(
+            Scope=self.scope,
+            Limit=100
+        )
+        return response.get('WebACLs', [])
+
+    def get_web_acl(self, web_acl_arn: str) -> Dict:
+        """
+        Get detailed information about a specific Web ACL.
+
+        Args:
+            web_acl_arn: ARN of the Web ACL to retrieve
+
+        Returns:
+            Dictionary containing Web ACL details
+        """
+        parts = web_acl_arn.split("/")
+        web_acl_name = parts[-2]
+        web_acl_id = parts[-1]
+
+        response = self.client.get_web_acl(
+            Name=web_acl_name,
+            Scope=self.scope,
+            Id=web_acl_id
+        )
+        return response.get('WebACL', {})
+
+    def create_rule_group_reference(self, rule_group_name: str, rule_group_arn: str, priority: int) -> Dict:
+        """
+        Create a rule group reference structure for adding to a Web ACL.
+
+        Args:
+            rule_group_name: Name of the rule group
+            rule_group_arn: ARN of the rule group
+            priority: Priority number for the rule in the Web ACL
+
+        Returns:
+            Dictionary containing the properly structured rule group reference
+        """
+        return {
+            'Name': f"RuleGroup-{rule_group_name}",
+            'Priority': priority,
+            'Statement': {
+                'RuleGroupReferenceStatement': {
+                    'ARN': rule_group_arn
+                }
+            },
+            'OverrideAction': {
+                'None': {}
+            },
+            'VisibilityConfig': {
+                'SampledRequestsEnabled': True,
+                'CloudWatchMetricsEnabled': True,
+                'MetricName': f"RuleGroupMetric-{rule_group_name}"
+            }
+        }
+
+    def add_rule_group_to_web_acl(self, web_acl: Dict, rule_group_arn: str,
+                                  rule_group_name: str, lock_token: str) -> Optional[Dict]:
+        """
+        Add a rule group to a specific Web ACL.
+
+        Args:
+            web_acl: Dictionary containing Web ACL details
+            rule_group_arn: ARN of the rule group to add
+            rule_group_name: Name of the rule group
+            lock_token: Lock token for the Web ACL
+
+        Returns:
+            Response from the update operation if successful, None if failed
+        """
+        existing_rules = web_acl.get('Rules', [])
+
+        # Check if Rule Group already exists in the Web ACL
+        for rule in existing_rules:
+            if ('RuleGroupReferenceStatement' in rule.get('Statement', {}) and
+                    rule['Statement']['RuleGroupReferenceStatement'].get('ARN') == rule_group_arn):
+                print(f"Rule Group {rule_group_name} is already in WebACL {web_acl['Name']}.")
+                return None
+
+        # Create and add new rule
+        new_rule = self.create_rule_group_reference(
+            rule_group_name,
+            rule_group_arn,
+            len(existing_rules) + 1
+        )
+        updated_rules = existing_rules + [new_rule]
+
+        try:
+            response = self.client.update_web_acl(
+                Name=web_acl['Name'],
+                Scope=self.scope,
+                Id=web_acl['Id'],
+                LockToken=lock_token,
+                DefaultAction=web_acl['DefaultAction'],
+                Rules=updated_rules,
+                VisibilityConfig=web_acl['VisibilityConfig']
+            )
+            print(f"Rule Group {rule_group_name} added successfully to WebACL {web_acl['Name']}.")
+            return response
+        except self.client.exceptions.WAFInvalidParameterException as e:
+            print(f"Error updating WebACL {web_acl['Name']}: {str(e)}")
+            print("Rule structure being sent:")
+            print(json.dumps(new_rule, indent=2))
+        except Exception as e:
+            print(f"Unexpected error while updating WebACL {web_acl['Name']}: {str(e)}")
+        return None
+
+    def execute(self, rule_group_arn: str) -> None:
+        """
+        Main execution method to add a rule group to all available Web ACLs.
+
+        This method:
+        1. Retrieves all Web ACLs in the specified scope
+        2. Extracts the rule group name from its ARN
+        3. Attempts to add the rule group to each Web ACL
+
+        Args:
+            rule_group_arn: ARN of the rule group to add to all Web ACLs
+        """
+        if not rule_group_arn:
+            print("Error: Rule Group ARN not provided.")
+            return
+
+        # Get all Web ACLs
+        web_acls = self.list_web_acls()
+        if not web_acls:
+            print("No Web ACLs found in the specified scope.")
+            return
+
+        print(f"Found {len(web_acls)} Web ACLs. Attempting to add rule group to each...")
+        # Extract rule group name from ARN
+        rule_group_name = rule_group_arn.split('/')[-2]
+
+        # Process each Web ACL
+        for web_acl_summary in web_acls:
+            web_acl_arn = web_acl_summary['ARN']
+            lock_token = web_acl_summary['LockToken']
+
+            # Get detailed Web ACL configuration
+            web_acl = self.get_web_acl(web_acl_arn)
+            if not web_acl:
+                print(f"Failed to retrieve Web ACL details for {web_acl_arn}")
+                continue
+
+            # Add rule group to the Web ACL
+            self.add_rule_group_to_web_acl(web_acl, rule_group_arn, rule_group_name, lock_token)
+
+
+def main():
+    """
+    Example usage of the WCLRuleManager class.
+    """
+    # Initialize the manager
+    manager = WCLRuleManager(
+        region_name='us-east-1',  # Specify your AWS region
+        scope="REGIONAL"  # Use "CLOUDFRONT" for CloudFront distributions
+    )
+
+    # Specify your rule group ARN
+    # TODO: replace with your rule group ARN
+    rule_group_arn = None  # actual ARN should be provided here
+
+    # Execute the addition of the rule group to all Web ACLs
+    manager.execute(rule_group_arn)
+
+
+if __name__ == "__main__":
+    main()
